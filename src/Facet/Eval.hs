@@ -1,3 +1,4 @@
+{-# LANGUAGE FunctionalDependencies #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -5,16 +6,30 @@ module Facet.Eval
 ( -- * Evaluation
   eval
   -- * Machinery
-, Handler(..)
 , Eval(..)
   -- * Values
 , Value(..)
 , unit
   -- * Quotation
 , quoteV
+, E(..)
+, runE
+, state'
+, state''
+, State'(..)
+, Reader'(..)
+-- , Empty(..)
+, toMaybe
+, send'
+, modify
+, get''
+, put''
+, ask''
+, local''
+, reader'
 ) where
 
-import Control.Algebra hiding (Handler)
+import Control.Algebra
 import Control.Carrier.Reader
 import Control.Monad (ap, guard, liftM, (>=>))
 import Control.Monad.Trans.Class
@@ -22,33 +37,31 @@ import Data.Foldable
 import Data.Function
 import Data.Maybe (fromMaybe)
 import Data.Text (Text)
-import Facet.Core.Module
-import Facet.Core.Pattern
-import Facet.Core.Term
-import Facet.Core.Type (TExpr)
 import Facet.Env as Env
 import Facet.Graph
+import Facet.Module
 import Facet.Name hiding (Op)
+import Facet.Pattern
 import Facet.Semialign (zipWithM)
-import Facet.Snoc
 import Facet.Snoc.NonEmpty as NE hiding ((|>))
 import Facet.Syntax
+import Facet.Term
 import GHC.Stack (HasCallStack)
 import Prelude hiding (zipWith)
 
-eval :: (HasCallStack, Has (Reader Graph :+: Reader Module) sig m, MonadFail m) => Env (Value (Eval m)) -> [(RName, Handler (Eval m))] -> Expr -> Eval m (Value (Eval m))
-eval env hdl = \case
-  XVar (Global n) -> global n >>= eval env hdl
-  XVar (Free n)   -> var env n
-  XTLam _ b       -> tlam (eval env hdl b)
-  XInst f t       -> inst (eval env hdl f) t
-  XLam cs         -> lam env cs
-  XApp  f a       -> app env hdl (eval env hdl f) a
-  XCon n fs       -> con n (eval env hdl <$> fs)
+eval :: (HasCallStack, Has (Reader Graph :+: Reader Module) sig m, MonadFail m) => Expr -> ReaderC (Env (Value (Eval m))) (Eval m) (Value (Eval m))
+eval = \case
+  XVar (Global n) -> global n >>= eval
+  XVar (Free n)   -> var n
+  XLam cs         -> lam cs
+  XApp  f a       -> app (eval f) a
+  XCon n fs       -> con n (eval <$> fs)
   XString s       -> string s
-  XOp n sp        -> op hdl n (flip (eval env) <$> sp)
+  XDict os        -> VDict <$> traverse (traverse eval) os
+  XLet p v b      -> eval v >>= \ v' -> local (|> fromMaybe (error "eval: non-exhaustive pattern in let") (matchV id p v')) (eval b)
+  XComp p b       -> comp p b
 
-global :: Has (Reader Graph :+: Reader Module) sig m => RName -> Eval m Expr
+global :: Has (Reader Graph :+: Reader Module) sig m => RName -> ReaderC (Env (Value (Eval m))) (Eval m) Expr
 global n = do
   mod <- lift ask
   graph <- lift ask
@@ -56,41 +69,30 @@ global n = do
     [_ :=: DTerm (Just v) _] -> pure v -- FIXME: store values in the module graph
     _                        -> error "throw a real error here"
 
-var :: (HasCallStack, Applicative m) => Env (Value m) -> LName Index -> m (Value m)
-var env n = pure (index env n)
+var :: (HasCallStack, Algebra sig m) => LName Index -> ReaderC (Env (Value m)) m (Value m)
+var n = asks (`index` n)
 
-tlam :: Eval m (Value (Eval m)) -> Eval m (Value (Eval m))
-tlam = id
+lam :: Algebra sig m => [(Pattern Name, Expr)] -> ReaderC (Env (Value (Eval m))) (Eval m) (Value (Eval m))
+lam cs = asks (`VLam` cs)
 
-inst :: Eval m (Value (Eval m)) -> TExpr -> Eval m (Value (Eval m))
-inst = const
-
-lam :: Env (Value (Eval m)) -> [(Pattern Name, Expr)] -> Eval m (Value (Eval m))
-lam env cs = pure $ VLam env cs
-
-app :: (HasCallStack, Has (Reader Graph :+: Reader Module) sig m, MonadFail m) => Env (Value (Eval m)) -> [(RName, Handler (Eval m))] -> Eval m (Value (Eval m)) -> Expr -> Eval m (Value (Eval m))
-app envCallSite hdl f a = f >>= \case
-  VLam env cs -> k a where
-    (h, k) = foldl' (\ (es, vs) -> \case
-      (PEff (POp n ps nk), b) -> ((n, Handler $ \ sp k -> traverse ($ (h <> hdl)) sp >>= \ sp -> eval (bindSpine env ps sp |> pvar (nk :=: VCont k)) hdl b) : es, vs)
-      (PEff (PAll n), b)      -> (es, \ a -> eval (env |> pvar (n :=: VLam envCallSite [(pvar __, a)])) hdl b)
-      (PVal p, b)             -> (es, eval envCallSite (h <> hdl) >=> fromMaybe (vs a) . matchV (\ vs -> eval (env |> PVal vs) hdl b) p)) ([], const (fail "non-exhaustive patterns in lambda")) cs
-  VCont k     -> k =<< eval envCallSite hdl a
+app :: (HasCallStack, Has (Reader Graph :+: Reader Module) sig m, MonadFail m) => ReaderC (Env (Value (Eval m))) (Eval m) (Value (Eval m)) -> Expr -> ReaderC (Env (Value (Eval m))) (Eval m) (Value (Eval m))
+app f a = ask >>= \ envCallSite -> f >>= \case
+  VLam env cs -> lift (k a) where
+    k = foldl' (\ vs (p, b) -> runReader envCallSite . eval >=> fromMaybe (vs a) . matchV (\ vs -> runReader (env |> vs) (eval b)) p) (const (fail "non-exhaustive patterns in lambda")) cs
+  VCont k     -> lift (k =<< runReader envCallSite (eval a))
   _           -> fail "expected lambda/continuation"
 
-string :: Text -> Eval m (Value (Eval m))
+string :: Text -> ReaderC (Env (Value (Eval m))) (Eval m) (Value (Eval m))
 string = pure . VString
 
-con :: RName -> Snoc (Eval m (Value (Eval m))) -> Eval m (Value (Eval m))
+con :: RName -> [ReaderC (Env (Value (Eval m))) (Eval m) (Value (Eval m))] -> ReaderC (Env (Value (Eval m))) (Eval m) (Value (Eval m))
 con n fs = VCon n <$> sequenceA fs
 
-op :: MonadFail m => [(RName, Handler (Eval m))] -> RName -> Snoc ([(RName, Handler (Eval m))] -> Eval m (Value (Eval m))) -> Eval m (Value (Eval m))
-op hdl n sp = Eval $ \ k -> maybe (fail ("unhandled operation: " <> show n)) (\ (_, h) -> runEval (runHandler h sp pure) k) (find ((n ==) . fst) hdl)
+comp :: [RName :=: Name] -> Expr -> ReaderC (Env (Value (Eval m))) (Eval m) (Value (Eval m))
+comp p b = pure $ VComp p b
 
 
 -- Machinery
-
-newtype Handler m = Handler { runHandler :: Snoc ([(RName, Handler m)] -> m (Value m)) -> (Value m -> m (Value m)) -> m (Value m) }
 
 newtype Eval m a = Eval { runEval :: forall r . (a -> m r) -> m r }
 
@@ -120,38 +122,32 @@ data Value m
   -- | Neutral; variables, only used during quotation
   = VVar (Var (LName Level))
   -- | Value; data constructors.
-  | VCon RName (Snoc (Value m))
+  | VCon RName [Value m]
   -- | Value; strings.
   | VString Text
   -- | Computation; lambdas.
   | VLam (Env (Value m)) [(Pattern Name, Expr)]
   -- | Computation; continuations, used in effect handlers.
   | VCont (Value m -> m (Value m))
+  | VDict [RName :=: Value m]
+  | VComp [RName :=: Name] Expr
 
 unit :: Value m
-unit = VCon (NE.FromList ["Data", "Unit"] :.: U "unit") Nil
+unit = VCon (NE.FromList ["Data", "Unit"] :.: U "unit") []
 
 
 -- Elimination
 
-matchV :: (ValuePattern (Name :=: Value m) -> a) -> ValuePattern Name -> Value m -> Maybe a
+matchV :: (Pattern (Name :=: Value m) -> a) -> Pattern Name -> Value m -> Maybe a
 matchV k p s = case p of
   PWildcard -> pure (k PWildcard)
   PVar n    -> pure (k (PVar (n :=: s)))
   PCon n ps
     | VCon n' fs <- s -> k . PCon n' <$ guard (n == n') <*> zipWithM (matchV id) ps fs
   PCon{}    -> Nothing
-
-bindValue ::  Env (Value m) -> ValuePattern Name -> Value m -> Env (Value m)
-bindValue env PWildcard   _           = env
-bindValue env (PVar n)    v           = env |> pvar (n :=: v)
-bindValue env (PCon _ ps) (VCon _ fs) = bindSpine env ps fs
-bindValue env _           _           = env -- FIXME: probably not a good idea to fail silently
-
-bindSpine :: Env (Value m) -> Snoc (ValuePattern Name) -> Snoc (Value m) -> Env (Value m)
-bindSpine env Nil        Nil        = env
-bindSpine env (tp :> hp) (ts :> hs) = bindValue (bindSpine env tp ts) hp hs
-bindSpine env _          _          = env -- FIXME: probably not a good idea to fail silently
+  PDict ps
+    | VDict os <- s -> k . PDict <$> zipWithM (\ (n1 :=: p) (n2 :=: o) -> (n1 :=: (p :=: o)) <$ guard (n1 == n2)) ps os
+  PDict{}   -> Nothing
 
 
 -- Quotation
@@ -163,3 +159,71 @@ quoteV d = \case
   VVar v    -> pure (XVar (fmap (levelToIndex d) <$> v))
   VCon n fs -> XCon n <$> traverse (quoteV d) fs
   VString s -> pure $ XString s
+  VDict os  -> XDict <$> traverse (traverse (quoteV d)) os
+  VComp p b -> pure $ XComp p b
+
+
+newtype E sig r a = E (forall i . sig (E sig) i r -> (a -> r) -> r)
+  deriving (Functor)
+
+instance Applicative (E sig r) where
+  pure a = E $ \ _ k -> k a
+  (<*>) = ap
+
+instance Monad (E sig r) where
+  E run >>= f = E $ \ d k -> run d (runE d k . f)
+
+runE :: sig (E sig) i r -> (a -> r) -> E sig r a -> r
+runE d k (E run) = run d k
+
+
+newtype Empty m a b = Empty { empty :: forall e . (e -> m b a) -> b }
+
+toMaybe :: E Empty (Maybe a) a -> Maybe a
+toMaybe = runE Empty{ empty = const Nothing } Just
+
+
+data Reader' r m a b = Reader'
+  { ask'   :: (r -> m b a) -> b
+  , local' :: forall x . (r -> r) -> m x x -> (x -> m b a) -> b }
+
+ask'' :: E (Reader' r) b r
+ask'' = send' ask'
+
+local'' :: (r -> r) -> E (Reader' r) a a -> E (Reader' r) a a
+local'' f m = send' (\ Reader'{ local' } -> local' f m)
+
+reader' :: r -> E (Reader' r) a a -> a
+reader' r = runE dict id
+  where
+  dict = Reader'
+    { ask'   = \     k -> reader' r (k r)
+    , local' = \ f m k -> reader' r (k (reader' (f r) m))
+    }
+
+
+data State' s m a b = State'
+  { get' :: (s -> m b a) -> b
+  , put' :: s -> (() -> m b a) -> b }
+
+send' :: (forall i . sig (E sig) i b -> (c -> E sig b i) -> b) -> E sig b c
+send' hdl = E $ \ d k -> hdl d (\ c -> E (\ _ _ -> k c))
+
+state'' :: s -> E (State' s) (s -> (s, a)) a -> (s, a)
+state'' = state' (,)
+
+state' :: (s -> a -> b) -> s -> E (State' s) (s -> b) a -> b
+state' z s m = runE dict (flip z) m s
+  where
+  dict = State'
+    { get' = \   k s -> state' z s (k s)
+    , put' = \ s k _ -> state' z s (k ()) }
+
+modify :: (s -> s) -> E (State' s) r ()
+modify f = put'' . f =<< get''
+
+get'' :: E (State' s) r s
+get'' = send' get'
+
+put'' :: s -> E (State' s) r ()
+put'' s = send' (`put'` s)

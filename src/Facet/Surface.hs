@@ -89,7 +89,7 @@ data ValPattern
   | PCon QName [Ann ValPattern]
   deriving (Eq, Show)
 
-data EffPattern = POp QName [Ann ValPattern] Name
+data EffPattern = POp QName [Ann ValPattern] (Ann ValPattern)
   deriving (Eq, Show)
 
 

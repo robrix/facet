@@ -29,16 +29,15 @@ import           Facet.Carrier.Readline.Haskeline
 import qualified Facet.Carrier.Throw.Inject as I
 import           Facet.Carrier.Write.General
 import qualified Facet.Carrier.Write.Inject as I
-import           Facet.Core.Module
-import           Facet.Core.Term (Expr)
-import           Facet.Core.Type as T hiding (eval)
 import           Facet.Driver
 import qualified Facet.Elab as Elab
 import qualified Facet.Elab.Term as Elab
 import qualified Facet.Elab.Type as Elab
 import           Facet.Eval as E
 import           Facet.Graph
+import           Facet.Interface as I
 import           Facet.Lens
+import           Facet.Module
 import           Facet.Name as Name
 import qualified Facet.Notice as Notice
 import           Facet.Notice.Elab
@@ -52,6 +51,7 @@ import           Facet.Source (Source(..), sourceFromString)
 import           Facet.Style as Style
 import qualified Facet.Surface as S
 import           Facet.Syntax
+import           Facet.Term (Expr)
 import           Prelude hiding (span, unlines)
 import           Silkscreen as S hiding (Ann, line)
 import           System.Console.ANSI
@@ -198,21 +198,21 @@ showType e = Action $ do
   outputDocLn (getPrint (ann (printExpr opts mempty e ::: printType opts mempty _T)))
 
 showEval e = Action $ do
-  e' ::: _T <- runElab $ Elab.elabSynthTerm $ locally Elab.sig_ (T.singleton (T.Interface (["Effect", "Console"]:.:U "Output") Nil) :) $ Elab.synth (Elab.synthExpr e)
+  e' ::: _T <- runElab $ Elab.elabSynthTerm $ locally Elab.sig_ (I.singleton (I.Interface (["Effect", "Console"]:.:U "Output") Nil) :) $ Elab.synth (Elab.synthExpr e)
   e'' <- runElab $ runEvalMain e'
   opts <- get
   outputDocLn (getPrint (ann (printExpr opts mempty e'' ::: printType opts mempty _T)))
 
 runEvalMain :: (Has (Error (Notice.Notice (Doc Style)) :+: Output :+: Reader Graph :+: Reader Module :+: State Options) sig m, MonadFail m) => Expr -> m Expr
-runEvalMain e = runEval (E.quoteV 0 =<< eval mempty hdl e) pure
-  where
-  hdl = [(write, Handler handle)]
-  write = fromList ["Effect", "Console"] :.: U "write"
-  handle (FromList [o]) k = do
-    E.VString s <- o hdl
-    outputText s *> k unit
-  handle _              _ = unhandled
-  unhandled = throwError $ Notice.Notice (Just Notice.Error) [] (fillSep @(Doc Style) [reflow "unhandled effect operator"]) []
+runEvalMain e = runEval (E.quoteV 0 =<< runReader mempty (eval e)) pure
+  -- where
+  -- hdl = [(write, Handler handle)]
+  -- write = fromList ["Effect", "Console"] :.: U "write"
+  -- handle (FromList [o]) k = do
+  --   E.VString s <- o hdl
+  --   outputText s *> k unit
+  -- handle _              _ = unhandled
+  -- unhandled = throwError $ Notice.Notice (Just Notice.Error) [] (fillSep @(Doc Style) [reflow "unhandled effect operator"]) []
 
 showKind :: S.Ann S.Type -> Action
 showKind _T = Action $ do

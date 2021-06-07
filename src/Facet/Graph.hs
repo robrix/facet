@@ -27,7 +27,7 @@ import           Data.Foldable (for_)
 import qualified Data.Map as Map
 import           Data.Monoid (Endo(..))
 import qualified Data.Set as Set
-import           Facet.Core.Module
+import           Facet.Module
 import           Facet.Name
 import           Facet.Snoc
 import           Facet.Snoc.NonEmpty (fromSnoc, toSnoc)

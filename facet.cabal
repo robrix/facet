@@ -74,10 +74,6 @@ library
     Facet.Carrier.Write.Inject
     Facet.CLI
     Facet.Context
-    Facet.Core.Module
-    Facet.Core.Pattern
-    Facet.Core.Term
-    Facet.Core.Type
     Facet.Diff
     Facet.Driver
     Facet.Effect.Parser
@@ -94,8 +90,11 @@ library
     Facet.Flag
     Facet.Format
     Facet.Graph
+    Facet.Interface
+    Facet.Kind
     Facet.Lens
     Facet.Lexer
+    Facet.Module
     Facet.Name
     Facet.Norm
     Facet.Notice
@@ -103,6 +102,7 @@ library
     Facet.Notice.Parser
     Facet.Parser
     Facet.Parser.Table
+    Facet.Pattern
     Facet.Pretty
     Facet.Print
     Facet.REPL
@@ -118,7 +118,11 @@ library
     Facet.Subst
     Facet.Surface
     Facet.Syntax
+    Facet.Term
     Facet.Timing
+    Facet.Type
+    Facet.Type.Expr
+    Facet.Type.Norm
     Facet.Unify
     Facet.Usage
     Facet.Vars
@@ -142,6 +146,7 @@ library
     , optparse-applicative
     , parsers
     , prettyprinter
+    , profunctors
     , semialign
     , silkscreen
     , terminal-size

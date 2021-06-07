@@ -56,20 +56,20 @@ import           Control.Carrier.State.Church
 import           Control.Carrier.Writer.Church
 import           Control.Effect.Choose
 import           Control.Effect.Lens (views)
-import           Control.Lens (Lens', lens)
+import           Control.Lens (Lens', lens, review)
 import           Control.Monad (unless, (<=<))
 import           Data.Foldable (for_)
 import           Facet.Context hiding (empty)
 import qualified Facet.Context as Context (empty)
-import           Facet.Core.Module
-import           Facet.Core.Pattern
-import           Facet.Core.Term as E
-import           Facet.Core.Type as T
 import           Facet.Effect.Write
 import qualified Facet.Env as Env
 import           Facet.Graph as Graph
+import           Facet.Interface
+import           Facet.Kind
 import           Facet.Lens
+import           Facet.Module
 import           Facet.Name hiding (L, R)
+import           Facet.Pattern
 import           Facet.Semiring
 import           Facet.Snoc
 import           Facet.Snoc.NonEmpty (toSnoc)
@@ -77,6 +77,9 @@ import           Facet.Source (Source, slice)
 import           Facet.Span (Span(..))
 import           Facet.Subst
 import           Facet.Syntax
+import           Facet.Term as E
+import qualified Facet.Type.Expr as TX
+import           Facet.Type.Norm as TN
 import           Facet.Usage as Usage
 import           Facet.Vars as Vars
 import           GHC.Stack
@@ -95,14 +98,14 @@ meta :: Has (State (Subst Type)) sig m => Kind -> m Meta
 meta _T = state (declareMeta @Type)
 
 
-instantiate :: Algebra sig m => (a -> TExpr -> a) -> a ::: Type -> Elab m (a ::: Type)
+instantiate :: Algebra sig m => (a -> TX.Type -> a) -> a ::: Type -> Elab m (a ::: Type)
 instantiate inst = go
   where
   go (e ::: _T) = case _T of
-    VForAll _ _T _B -> do
+    TN.ForAll _ _T _B -> do
       m <- meta _T
-      go (inst e (TVar (Free (Left m))) ::: _B (metavar m))
-    _                -> pure $ e ::: _T
+      go (inst e (TX.Var (Free (Left m))) ::: _B (metavar m))
+    _                 -> pure $ e ::: _T
 
 
 resolveWith
@@ -128,7 +131,7 @@ lookupInContext (m:.n)
 
 -- FIXME: probably we should instead look up the effect op globally, then check for membership in the sig
 -- FIXME: return the index in the sig; it’s vital for evaluation of polymorphic effects when there are multiple such
-lookupInSig :: Has (Choose :+: Empty) sig m => QName -> Module -> Graph -> [Signature Type] -> m (RName :=: Def)
+lookupInSig :: Has (Choose :+: Empty) sig m => QName -> Module -> Graph -> [Signature Type] -> m (RName :=: Type)
 lookupInSig (m :. n) mod graph = foldMapC $ foldMapC (\ (Interface q@(m':.:_) _) -> do
   guard (m == Nil || m == toSnoc m')
   defs <- interfaceScope =<< lookupQ graph mod (toQ q)
@@ -160,8 +163,8 @@ sat a b
   | otherwise = True
 
 
-evalTExpr :: Has (Reader ElabContext :+: State (Subst Type)) sig m => TExpr -> m Type
-evalTExpr texpr = T.eval <$> get <*> views context_ toEnv <*> pure texpr
+evalTExpr :: Has (Reader ElabContext :+: State (Subst Type)) sig m => TX.Type -> m Type
+evalTExpr texpr = TN.eval <$> get <*> views context_ toEnv <*> pure texpr
 
 depth :: Has (Reader ElabContext) sig m => m Level
 depth = views context_ level
@@ -277,11 +280,11 @@ warn reason = do
 
 -- Patterns
 
-assertMatch :: (HasCallStack, Has (Throw Err) sig m) => (Classifier -> Maybe out) -> String -> Classifier -> Elab m out
-assertMatch pat exp _T = maybe (mismatch (Exp (Left exp)) (Act _T)) pure (pat _T)
+assertMatch :: (HasCallStack, Has (Throw Err) sig m, Classified t) => (t -> Maybe out) -> String -> t -> Elab m out
+assertMatch pat exp _T = maybe (mismatch (Exp (Left exp)) (Act (review classified _T))) pure (pat _T)
 
 assertFunction :: (HasCallStack, Has (Throw Err) sig m) => Type -> Elab m (Maybe Name ::: (Quantity, Type), Type)
-assertFunction = assertMatch (\case{ CT (VArrow n q t b) -> pure (n ::: (q, t), b) ; _ -> Nothing }) "_ -> _" . CT
+assertFunction = assertMatch (\case{ TN.Arrow n q t b -> pure (n ::: (q, t), b) ; _ -> Nothing }) "_ -> _"
 
 
 -- Unification
@@ -325,14 +328,14 @@ elabWith scale k m = runState k mempty . runWriter (const pure) $ do
 elabKind :: Has (Reader Graph :+: Reader Module :+: Reader Source) sig m => Elab m Kind -> m Kind
 elabKind = elabWith zero (const pure)
 
-elabType :: (HasCallStack, Has (Reader Graph :+: Reader Module :+: Reader Source) sig m) => Elab m TExpr -> m Type
-elabType = elabWith zero (\ subst t -> pure (T.eval subst Env.empty t))
+elabType :: (HasCallStack, Has (Reader Graph :+: Reader Module :+: Reader Source) sig m) => Elab m TX.Type -> m Type
+elabType = elabWith zero (\ subst t -> pure (TN.eval subst Env.empty t))
 
 elabTerm :: Has (Reader Graph :+: Reader Module :+: Reader Source) sig m => Elab m Expr -> m Expr
 elabTerm = elabWith one (const pure)
 
 elabSynthTerm :: (HasCallStack, Has (Reader Graph :+: Reader Module :+: Reader Source) sig m) => Elab m (Expr ::: Type) -> m (Expr ::: Type)
-elabSynthTerm = elabWith one (\ subst (e ::: _T) -> pure (e ::: T.eval subst Env.empty (T.quote 0 _T)))
+elabSynthTerm = elabWith one (\ subst (e ::: _T) -> pure (e ::: TN.eval subst Env.empty (TN.quote 0 _T)))
 
-elabSynthType :: (HasCallStack, Has (Reader Graph :+: Reader Module :+: Reader Source) sig m) => Elab m (TExpr ::: Kind) -> m (Type ::: Kind)
-elabSynthType = elabWith zero (\ subst (_T ::: _K) -> pure (T.eval subst Env.empty _T ::: _K))
+elabSynthType :: (HasCallStack, Has (Reader Graph :+: Reader Module :+: Reader Source) sig m) => Elab m (TX.Type ::: Kind) -> m (Type ::: Kind)
+elabSynthType = elabWith zero (\ subst (_T ::: _K) -> pure (TN.eval subst Env.empty _T ::: _K))

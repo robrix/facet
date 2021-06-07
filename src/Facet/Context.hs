@@ -12,12 +12,12 @@ module Facet.Context
 
 import qualified Control.Effect.Empty as E
 import           Data.Foldable (find, toList)
-import           Facet.Core.Pattern
-import           Facet.Core.Type
 import qualified Facet.Env as Env
 import           Facet.Name
+import           Facet.Pattern
 import qualified Facet.Snoc as S
 import           Facet.Syntax
+import           Facet.Type.Norm
 import           Facet.Usage
 import           GHC.Stack
 import           Prelude hiding (lookup)

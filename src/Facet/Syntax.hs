@@ -1,3 +1,5 @@
+{-# LANGUAGE PolyKinds #-}
+{-# LANGUAGE StandaloneKindSignatures #-}
 module Facet.Syntax
 ( (:::)(..)
 , tm
@@ -12,12 +14,15 @@ module Facet.Syntax
   -- * Assertion data
 , Exp(..)
 , Act(..)
+  -- * Type-safe constructors
+, T(..)
 ) where
 
 import Data.Bifoldable
 import Data.Bifunctor
 import Data.Bitraversable
 import Data.Functor.Classes
+import Data.Kind (Type)
 import Facet.Name
 import Facet.Snoc
 
@@ -107,3 +112,10 @@ newtype Exp a = Exp { getExp :: a }
 
 newtype Act a = Act { getAct :: a }
   deriving (Functor)
+
+
+-- Type-safe constructors
+
+type T :: Type -> forall k . k -> Type
+
+newtype T a b = T { getT :: a }

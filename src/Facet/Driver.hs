@@ -34,12 +34,12 @@ import qualified Data.Text as TS
 import           Data.Traversable (for)
 import           Facet.Carrier.Parser.Church
 import qualified Facet.Carrier.Throw.Inject as I
-import           Facet.Core.Module hiding (Import(name), imports, imports_)
 import           Facet.Effect.Readline
 import           Facet.Effect.Write
 import qualified Facet.Elab.Term as Elab
 import           Facet.Graph
 import           Facet.Lens
+import           Facet.Module hiding (Import(name), imports, imports_)
 import           Facet.Name
 import qualified Facet.Notice as Notice
 import           Facet.Notice.Elab (rethrowElabErrors, rethrowElabWarnings)
@@ -85,7 +85,7 @@ kernel :: Module
 kernel = Module kernelName [] [] $ Scope mempty
   -- FIXME: include things like Type and Interface
   where
-  kernelName = fromList [TS.pack "Kernel"]
+  kernelName = fromList [U (TS.pack "Kernel")]
 
 
 -- Module loading
@@ -164,7 +164,10 @@ resolveName searchPaths name = do
       [] -> []
       _  -> [ nest 2 (reflow "search paths:" <\> concatWith (<\>) (map pretty searchPaths)) ]
   where
-  toPath components = foldr1 (FP.</>) (TS.unpack <$> components)
+  toPath components = foldr1 (FP.</>) (unpack <$> components)
+  unpack = \case
+    U n -> TS.unpack n
+    O o -> formatOp (\ a b -> a <> " " <> b) TS.unpack "_" o
 
 
 -- Errors

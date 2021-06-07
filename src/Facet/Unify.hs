@@ -10,25 +10,28 @@ module Facet.Unify
 , unifyInterface
 ) where
 
-import Control.Carrier.Empty.Church
-import Control.Carrier.Error.Church
-import Control.Effect.Reader
-import Control.Effect.State
-import Control.Effect.Sum
-import Control.Effect.Writer
-import Control.Monad (unless)
-import Facet.Carrier.Throw.Inject
-import Facet.Core.Pattern
-import Facet.Core.Type
-import Facet.Elab
-import Facet.Name
-import Facet.Semialign
-import Facet.Semiring
-import Facet.Snoc
-import Facet.Subst
-import Facet.Syntax
-import Facet.Usage
-import GHC.Stack
+import           Control.Carrier.Empty.Church
+import           Control.Carrier.Error.Church
+import           Control.Effect.Reader
+import           Control.Effect.State
+import           Control.Effect.Sum
+import           Control.Effect.Writer
+import           Control.Monad (unless)
+import           Facet.Carrier.Throw.Inject
+import           Facet.Elab
+import           Facet.Interface
+import           Facet.Kind
+import           Facet.Name
+import           Facet.Pattern
+import           Facet.Semialign
+import           Facet.Semiring
+import           Facet.Snoc
+import           Facet.Subst
+import           Facet.Syntax
+import qualified Facet.Type.Expr as TX
+import           Facet.Type.Norm as TN
+import           Facet.Usage
+import           GHC.Stack
 
 -- Unification
 
@@ -50,22 +53,22 @@ occurs v t = withFrozenCallStack $ throwError $ WithCallStack GHC.Stack.callStac
 
 unifyType :: (HasCallStack, Has (Reader ElabContext :+: Reader StaticContext :+: State (Subst Type) :+: Throw Err :+: Throw (WithCallStack UnifyErrReason) :+: Writer Usage) sig m) => Type -> Type -> m Type
 unifyType = curry $ \case
-  (VComp s1 t1, VComp s2 t2)                           -> VComp . fromInterfaces <$> unifySpine unifyInterface (interfaces s1) (interfaces s2) <*> unifyType t1 t2
-  (VComp s1 t1, t2)                                    -> VComp s1 <$> unifyType t1 t2
-  (t1, VComp s2 t2)                                    -> VComp s2 <$> unifyType t1 t2
-  (VNe (Free (Left v1)) Nil, VNe (Free (Left v2)) Nil) -> flexFlex v1 v2
-  (VNe (Free (Left v1)) Nil, t2)                       -> solve v1 t2
-  (t1, VNe (Free (Left v2)) Nil)                       -> solve v2 t1
-  (VForAll _ t1 b1, VForAll n t2 b2)                   -> depth >>= \ d -> evalTExpr =<< mkForAll d n <$> unifyKind t1 t2 <*> ((zero, pvar (n ::: CK t2)) |- unifyType (b1 (free (LName d n))) (b2 (free (LName d n))))
-  (VForAll{}, _)                                       -> mismatch
-  (VArrow _ _ a1 b1, VArrow n q a2 b2)                 -> VArrow n q <$> unifyType a1 a2 <*> unifyType b1 b2
-  (VArrow{}, _)                                        -> mismatch
-  (VNe v1 sp1, VNe v2 sp2)                             -> VNe <$> unifyVar v1 v2 <*> unifySpine unifyType sp1 sp2
-  (VNe{}, _)                                           -> mismatch
-  (VString, VString)                                   -> pure VString
-  (VString, _)                                         -> mismatch
+  (TN.Comp s1 t1, TN.Comp s2 t2)                           -> TN.Comp . fromInterfaces <$> unifySpine unifyInterface (interfaces s1) (interfaces s2) <*> unifyType t1 t2
+  (TN.Comp s1 t1, t2)                                      -> TN.Comp s1 <$> unifyType t1 t2
+  (t1, TN.Comp s2 t2)                                      -> TN.Comp s2 <$> unifyType t1 t2
+  (TN.Ne (Free (Left v1)) Nil, TN.Ne (Free (Left v2)) Nil) -> flexFlex v1 v2
+  (TN.Ne (Free (Left v1)) Nil, t2)                         -> solve v1 t2
+  (t1, TN.Ne (Free (Left v2)) Nil)                         -> solve v2 t1
+  (TN.ForAll _ t1 b1, TN.ForAll n t2 b2)                   -> depth >>= \ d -> evalTExpr =<< mkForAll d n <$> unifyKind t1 t2 <*> ((zero, PVar (n ::: CK t2)) |- unifyType (b1 (free (LName d n))) (b2 (free (LName d n))))
+  (TN.ForAll{}, _)                                         -> mismatch
+  (TN.Arrow _ _ a1 b1, TN.Arrow n q a2 b2)                 -> TN.Arrow n q <$> unifyType a1 a2 <*> unifyType b1 b2
+  (TN.Arrow{}, _)                                          -> mismatch
+  (TN.Ne v1 sp1, TN.Ne v2 sp2)                             -> TN.Ne <$> unifyVar v1 v2 <*> unifySpine unifyType sp1 sp2
+  (TN.Ne{}, _)                                             -> mismatch
+  (TN.String, TN.String)                                   -> pure TN.String
+  (TN.String, _)                                           -> mismatch
   where
-  mkForAll d n k b = TForAll n k (quote (succ d) b)
+  mkForAll d n k b = TX.ForAll n k (quote (succ d) b)
 
 unifyKind :: Has (Reader ElabContext :+: Reader StaticContext :+: State (Subst Type) :+: Throw Err :+: Throw (WithCallStack UnifyErrReason) :+: Writer Usage) sig m => Kind -> Kind -> m Kind
 unifyKind k1 k2 = if k1 == k2 then pure k2 else mismatch

@@ -10,8 +10,8 @@ module Facet.Env
 import Control.Applicative ((<|>))
 import Control.Monad (guard)
 import Data.Maybe (fromMaybe)
-import Facet.Core.Pattern
 import Facet.Name
+import Facet.Pattern
 import Facet.Snoc
 import Facet.Syntax
 import GHC.Stack

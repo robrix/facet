@@ -2,6 +2,7 @@ module Effect.Empty : Module
 
 import Data.Bool
 import Data.Function
+import Data.Option
 import Data.Unit
 
 interface Empty : Interface
@@ -9,3 +10,8 @@ interface Empty : Interface
 
 guard : (c : Bool) -> [Empty] Unit
 { if c id { (unit) -> empty } }
+
+
+toOption : {A : Type} -> [Empty] A -> Option A
+{ [empty ; _] -> none
+, a           -> some a }

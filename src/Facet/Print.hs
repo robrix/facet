@@ -35,19 +35,21 @@ import           Data.Foldable (foldl', toList)
 import           Data.Maybe (fromMaybe)
 import qualified Data.Text as T
 import           Data.Traversable (mapAccumL)
-import qualified Facet.Core.Module as C
-import           Facet.Core.Pattern
-import qualified Facet.Core.Term as C
-import qualified Facet.Core.Type as C
-import qualified Facet.Core.Type as CT
 import           Facet.Env as Env
+import           Facet.Interface
+import           Facet.Kind
+import qualified Facet.Module as C
 import           Facet.Name as Name
 import qualified Facet.Norm as N
+import           Facet.Pattern
 import           Facet.Pretty (lower, upper)
 import           Facet.Semiring (one, zero)
 import           Facet.Snoc
 import           Facet.Style
 import           Facet.Syntax
+import qualified Facet.Term as C
+import qualified Facet.Type.Expr as TX
+import qualified Facet.Type.Norm as TN
 import qualified Prettyprinter as PP
 import           Silkscreen as P
 import           Silkscreen.Printer.Prec hiding (Level)
@@ -150,68 +152,68 @@ suppressInstantiation = const
 
 -- Core printers
 
-printSubject :: Options -> Env Print -> C.Classifier -> Print
+printSubject :: Options -> Env Print -> TN.Classifier -> Print
 printSubject opts env = \case
-  C.CK k -> printKind env k
-  C.CT t -> printType opts env t
+  TN.CK k -> printKind env k
+  TN.CT t -> printType opts env t
 
-printKind :: Env Print -> C.Kind -> Print
+printKind :: Env Print -> Kind -> Print
 printKind env = \case
-  C.KType               -> annotate Type $ pretty "Type"
-  C.KInterface          -> annotate Type $ pretty "Interface"
-  C.KArrow Nothing  a b -> printKind env a --> printKind env b
-  C.KArrow (Just n) a b -> parens (ann (intro n d ::: printKind env a)) --> printKind env b
+  KType               -> annotate Type $ pretty "Type"
+  KInterface          -> annotate Type $ pretty "Interface"
+  KArrow Nothing  a b -> printKind env a --> printKind env b
+  KArrow (Just n) a b -> parens (ann (intro n d ::: printKind env a)) --> printKind env b
   where
   d = level env
 
-printType :: Options -> Env Print -> C.Type -> Print
-printType opts env = printTExpr opts env . CT.quote (level env)
+printType :: Options -> Env Print -> TN.Type -> Print
+printType opts env = printTExpr opts env . TN.quote (level env)
 
-printInterface :: Options -> Env Print -> C.Interface C.Type -> Print
+printInterface :: Options -> Env Print -> Interface TN.Type -> Print
 printInterface = printInterfaceWith printType
 
-printTExpr :: Options -> Env Print -> C.TExpr -> Print
+printTExpr :: Options -> Env Print -> TX.Type -> Print
 printTExpr opts@Options{ rname } = go
   where
   qvar = group . setPrec Var . rname
   go env = \case
-    C.TVar (Global n)       -> qvar n
-    C.TVar (Free (Right n)) -> fromMaybe (lname (indexToLevel d <$> n)) $ Env.lookup env n
-    C.TVar (Free (Left m))  -> meta m
-    C.TForAll      n    t b -> braces (ann (intro n d ::: printKind env t)) --> go (env |> pvar (n :=: intro n d)) b
-    C.TArrow Nothing  q a b -> mult q (go env a) --> go env b
-    C.TArrow (Just n) q a b -> parens (ann (intro n d ::: mult q (go env a))) --> go env b
-    C.TComp s t             -> if s == mempty then go env t else sig s <+> go env t
-    C.TApp f a              -> group (go env f) $$ group (go env a)
-    C.TString               -> annotate Type $ pretty "String"
+    TX.Var (Global n)       -> qvar n
+    TX.Var (Free (Right n)) -> fromMaybe (lname (indexToLevel d <$> n)) $ Env.lookup env n
+    TX.Var (Free (Left m))  -> meta m
+    TX.ForAll      n    t b -> braces (ann (intro n d ::: printKind env t)) --> go (env |> PVar (n :=: intro n d)) b
+    TX.Arrow Nothing  q a b -> mult q (go env a) --> go env b
+    TX.Arrow (Just n) q a b -> parens (ann (intro n d ::: mult q (go env a))) --> go env b
+    TX.Comp s t             -> if s == mempty then go env t else sig s <+> go env t
+    TX.App f a              -> group (go env f) $$ group (go env a)
+    TX.String               -> annotate Type $ pretty "String"
     where
     d = level env
-    sig s = brackets (commaSep (map (interface env) (C.interfaces s)))
+    sig s = brackets (commaSep (map (interface env) (interfaces s)))
   interface = printInterfaceWith printTExpr opts
   mult q = if
     | q == zero -> (pretty '0' <+>)
     | q == one  -> (pretty '1' <+>)
     | otherwise -> id
 
-printInterfaceWith :: (Options -> Env Print -> a -> Print) -> Options -> Env Print -> C.Interface a -> Print
-printInterfaceWith with opts@Options{ rname } env (C.Interface h sp) = rname h $$* fmap (with opts env) sp
+printInterfaceWith :: (Options -> Env Print -> a -> Print) -> Options -> Env Print -> Interface a -> Print
+printInterfaceWith with opts@Options{ rname } env (Interface h sp) = rname h $$* fmap (with opts env) sp
 
 printNorm :: Options -> Env Print -> N.Norm -> Print
 printNorm opts env = printExpr opts env . N.quote (level env)
 
 printExpr :: Options -> Env Print -> C.Expr -> Print
-printExpr opts@Options{ rname, instantiation } = go
+printExpr opts@Options{ rname } = go
   where
   go env = \case
     C.XVar (Global n) -> qvar n
     C.XVar (Free n)   -> fromMaybe (lname (indexToLevel d <$> n)) $ Env.lookup env n
-    C.XTLam n b       -> let { d = level env ; v = tintro n d } in braces (braces v <+> arrow <+> go (env |> pvar (__ :=: v)) b)
-    C.XInst e t       -> go env e `instantiation` braces (printTExpr opts env t)
     C.XLam cs         -> comp (commaSep (map (clause env) cs))
     C.XApp f a        -> go env f $$ go env a
     C.XCon n p        -> qvar n $$* (group . go env <$> p)
-    C.XOp n p         -> qvar n $$* (group . go env <$> p)
     C.XString s       -> annotate Lit $ pretty (show s)
+    C.XDict os        -> brackets (flatAlt space line <> commaSep (map (\ (n :=: v) -> rname n <+> equals <+> group (go env v)) os) <> flatAlt space line)
+    C.XLet p v b      -> let p' = snd (mapAccumL (\ d n -> (succ d, n :=: local n d)) (level env) p) in pretty "let" <+> braces (printPattern opts (def <$> p') </> equals <+> group (go env v)) <+> pretty "in" <+> go (env |> p') b
+    C.XComp p b       -> comp (clause env (PDict p, b))
     where
     d = level env
   qvar = group . setPrec Var . rname
@@ -220,36 +222,29 @@ printExpr opts@Options{ rname, instantiation } = go
     p' = snd (mapAccumL (\ d n -> (succ d, n :=: local n d)) (level env) p)
 
 printPattern :: Options -> Pattern Print -> Print
-printPattern Options{ rname } = \case
-  PVal p -> vpat p
-  PEff p -> epat p
+printPattern Options{ rname } = go
   where
-  vpat = \case
+  go = \case
     PWildcard -> pretty '_'
     PVar n    -> n
-    PCon n ps -> parens (hsep (annotate Con (rname n):map vpat (toList ps)))
-  epat = \case
-    PAll n     -> n
-    POp q ps k -> brackets (hsep (pretty q : map vpat (toList ps)) <+> semi <+> k)
+    PCon n ps -> parens (annotate Con (rname n) $$* map go (toList ps))
+    PDict os  -> brackets (flatAlt space line <> commaSep (map (\ (n :=: v) -> rname n <+> equals <+> group v) os) <> flatAlt space line)
 
 printModule :: C.Module -> Print
 printModule (C.Module mname is _ ds) = module_
   mname
-  (qvar (fromList [T.pack "Kernel"]:.U (T.pack "Module")))
+  (qvar (fromList [U (T.pack "Kernel")]:.U (T.pack "Module")))
   (map (\ (C.Import n) -> import' n) is)
-  (map def (C.scopeToList ds))
+  (map (def . fmap defBody) (C.scopeToList ds))
   where
-  def (n :=: d) = ann
-    $   qvar (Nil:.n)
-    ::: case d of
-      C.DTerm Nothing  _T ->       printType opts empty _T
-      C.DTerm (Just b) _T -> defn (printType opts empty _T :=: printExpr opts empty b)
-      C.DData cs _K -> annotate Keyword (pretty "data") <+> declList
-        (map def (C.scopeToList cs))
-      C.DInterface os _K -> annotate Keyword (pretty "interface") <+> declList
-        (map def (C.scopeToList os))
-      C.DModule ds _K -> block (concatWith (surround hardline) (map ((hardline <>) . def) (C.scopeToList ds)))
-  declList = block . group . concatWith (surround (hardline <> comma <> space)) . map group
+  def (n :=: d) = ann (qvar (Nil:.n) ::: d)
+  defBody = \case
+    C.DTerm Nothing  _T ->       printType opts empty _T
+    C.DTerm (Just b) _T -> defn (printType opts empty _T :=: printExpr opts empty b)
+    C.DData cs _K       -> annotate Keyword (pretty "data") <+> scope defBody cs
+    C.DInterface os _K  -> annotate Keyword (pretty "interface") <+> scope (printType opts empty) os
+    C.DModule ds _K     -> block (concatWith (surround hardline) (map ((hardline <>) . def . fmap defBody) (C.scopeToList ds)))
+  scope with = block . group . concatWith (surround (hardline <> comma <> space)) . map (group . def . fmap with) . C.scopeToList
   import' n = pretty "import" <+> braces (setPrec Var (prettyMName n))
   module_ n t is ds = ann (setPrec Var (prettyMName n) ::: t) </> concatWith (surround hardline) (is ++ map (hardline <>) ds)
   defn (a :=: b) = group a <> hardline <> group b

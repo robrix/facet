@@ -10,16 +10,20 @@ module Facet.Name
 , prettyMName
 , QName(..)
 , RName(..)
+, (.:.)
 , toQ
 , LName(..)
 , Name(..)
 , Assoc(..)
 , Op(..)
+, formatOp
 , OpN(..)
+, formatOpN
 ) where
 
-import           Data.Foldable (foldr', toList)
+import           Data.Foldable (foldl', foldr', toList)
 import           Data.Functor.Classes (showsUnaryWith)
+import           Data.List (intersperse)
 import qualified Data.List.NonEmpty as NE
 import           Data.String (IsString(..))
 import           Data.Text (Text)
@@ -58,18 +62,22 @@ __ :: Name
 __ = U T.empty
 
 
-type MName = NonEmpty Text
+type MName = NonEmpty Name
 
 prettyMName :: Printer a => MName -> a
 prettyMName (ns:|>n) = foldr' (surround dot . pretty) (pretty n) ns
 
+showsModuleName :: (Foldable t, Show a, Show b) => String -> t a -> b -> Int -> ShowS
+showsModuleName c m n p = showParen (p > 9) $ foldl' (.) id (intersperse (showChar '.') (shows <$> toList m)) . showString c . showsPrec 10 n
+
+
 
 -- | Qualified names, consisting of a module name and declaration name.
-data QName = Snoc Text :. Name -- FIXME: use Name on the lhs so we can accommodate datatypes with operator names
+data QName = Snoc Name :. Name
   deriving (Eq, Ord)
 
 instance Show QName where
-  showsPrec p (m :. n) = showParen (p > 9) $ shows (T.intercalate "." (toList m)) . showString ":." . showsPrec 10 n
+  showsPrec p (m :. n) = showsModuleName ":." m n p
 
 instance P.Pretty QName where
   pretty (m :. n) = foldr' (surround dot . pretty) (pretty n) m
@@ -80,10 +88,14 @@ data RName = MName :.: Name
   deriving (Eq, Ord)
 
 instance Show RName where
-  showsPrec p (m :.: n) = showParen (p > 9) $ shows (T.intercalate "." (toList m)) . showString ":.:" . showsPrec 10 n
+  showsPrec p (m :.: n) = showsModuleName ":.:" m n p
 
 instance P.Pretty RName where
   pretty (m :.: n) = foldr' (surround dot . pretty) (pretty n) m
+
+-- | Append a 'Name' onto an 'RName'.
+(.:.) :: RName -> Name -> RName
+m :.: n .:. n' = (m |> n) :.: n'
 
 -- | Weaken an 'RName' to a 'QName'. This is primarily used for performing lookups in the graph starting from an 'RName' where the stronger structure is not required.
 toQ :: RName -> QName
@@ -122,14 +134,17 @@ data Op
   | Outfix Text Text
   deriving (Eq, Ord, Show)
 
+formatOp :: (a -> a -> a) -> (Text -> a) -> a -> Op -> a
+formatOp (<+>) pretty place = \case
+  Prefix   s -> pretty s <+> place
+  Postfix  s -> place <+> pretty s
+  Infix    s -> place <+> pretty s <+> place
+  Outfix s e -> pretty s <+> place <+> pretty e
+
 -- FIXME: specify relative precedences
 
 instance P.Pretty Op where
-  pretty = \case
-    Prefix   s -> P.pretty s <+> place
-    Postfix  s -> place <+> P.pretty s
-    Infix    s -> place <+> P.pretty s <+> place
-    Outfix s e -> P.pretty s <+> place <+> P.pretty e
+  pretty = formatOp (<+>) P.pretty place
     where
     place = P.pretty '_'
 
@@ -145,3 +160,10 @@ data OpN
   deriving (Eq, Ord, Show)
 
 -- FIXME: can we treat this more compositionally instead? i.e. treat an n-ary prefix operator as a composition of individual prefix operators? Then each placeholder lines up with a unary operator corresponding to the type of the tail
+
+formatOpN :: (a -> a -> a) -> (Text -> a) -> a -> OpN -> a
+formatOpN (<+>) pretty place = \case
+  PrefixN   s ss        -> foldl' (<+>) (comp s) (map comp ss) where comp s = pretty s <+> place
+  PostfixN  ee e        -> foldr' (<+>) (comp e) (map comp ee) where comp e = place <+> pretty e
+  InfixN    (m NE.:|mm) -> place <+> foldr' comp (pretty m) mm <+> place where comp s e = pretty s <+> place <+> e
+  OutfixN s mm e        -> foldr' comp (pretty e) (s : mm) where comp s e = pretty s <+> place <+> e
